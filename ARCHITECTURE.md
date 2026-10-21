@@ -1,6 +1,6 @@
 # Архитектура сервиса генерации
 
-Документ описывает, как устроен сервис и почему каждое решение такое. Операционная инструкция — в [README.md](README.md).
+Документ описывает, как устроен сервис и почему каждое решение такое. Операционная инструкция — в [README.md](README.md). Картинки этих схем для показа на весь экран — в [docs/diagrams](docs/diagrams/index.html).
 
 ## Что строим
 
@@ -25,19 +25,24 @@
 `moderation` не ведёт на ногу с `skip_on_moderation`. Сторож для маршрута равен отказу `technical`: по правилам задания он идёт туда же, куда отказ в вебхуке.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> CheckLeg
-    CheckLeg --> Rejected: ноги нет
-    CheckLeg --> Charged: нога есть
-    Charged --> Sending: попытка создана
-    Sending --> Waiting: провайдер принял 202
-    Sending --> Decide: 5xx или таймаут
-    Waiting --> Decide: failed или сторож
-    Waiting --> Completed: completed
-    Decide --> Sending: есть следующая нога
-    Decide --> Refunded: ног нет или payload
-    Completed --> [*]
-    Refunded --> [*]
+flowchart TD
+  step1["1. Пришёл заказ"] --> fit{"Есть нога под число референсов?"}
+  fit -->|нет| reject["400, деньги не трогаем"]
+  fit -->|да| money{"Хватает токенов и активных задач меньше 3?"}
+  money -->|нет денег| pay["402"]
+  money -->|уже 3 задачи| limit["429"]
+  money -->|да| step2["2. Одна строка журнала: списание, задача создана"]
+  step2 --> step3["3. Отправка на первую подходящую ногу"]
+  step3 --> accepted{"Провайдер ответил 202?"}
+  accepted -->|5xx или таймаут| decision["5. Одно решение"]
+  accepted -->|да| step4["4. Ждём вебхук или сторожа, 60 секунд"]
+  step4 -->|completed, пока ещё ждём| done["Задача completed, ссылка есть, возврата нет"]
+  step4 -->|failed или тишина| decision
+  decision --> kind{"Какой отказ?"}
+  kind -->|payload| refund["failed и ровно один возврат"]
+  kind -->|technical, moderation или сторож| next{"Есть следующая нога?"}
+  next -->|да, и модерация её не запретила| step3
+  next -->|нет| refund
 ```
 
 Поздний `completed` после того, как попытку уже закрыли, в этот автомат не возвращает. Он остаётся пометкой на старой попытке.
@@ -70,6 +75,17 @@ stateDiagram-v2
 | Списание за задачу | `charge:{task_id}` |
 | Возврат за задачу | `refund:{task_id}` |
 | Оплата | `payment:{payment_id}` |
+
+```mermaid
+flowchart LR
+  payIn["Оплата payment_id"] --> oncePay["Ключ payment:id, одна вставка"]
+  oncePay --> balance["Баланс = сумма журнала"]
+  order["Заказ"] --> onceCharge["Ключ charge:task_id"]
+  onceCharge --> balance
+  fail["Ноги кончились или payload"] --> onceRefund["Ключ refund:task_id"]
+  onceRefund --> balance
+  late["Поздний completed после сторожа"] --> history["Ссылка только в истории попытки"]
+```
 
 Повторная вставка с тем же ключом не добавляет строку, триггер не стреляет, баланс стоит.
 
