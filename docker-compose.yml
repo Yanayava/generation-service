@@ -1,0 +1,54 @@
+name: generation
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gen
+      POSTGRES_PASSWORD: gen
+      POSTGRES_DB: gen
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gen -d gen"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  providers:
+    build: .
+    command: uvicorn providers.main:app --host 0.0.0.0 --port 8001 --workers 1
+    environment:
+      WEBHOOK_SECRET: dev-secret
+      APP_WEBHOOK_BASE: http://app:8000
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gen:gen@postgres:5432/gen
+      WEBHOOK_SECRET: dev-secret
+      PROVIDER_TIMEOUT: "60"
+      PROVIDER_HTTP_TIMEOUT: "5"
+      DISPATCH_GRACE_SECONDS: "15"
+      WATCHDOG_INTERVAL_SECONDS: "1"
+      PROVIDER_ALPHA_URL: http://providers:8001/alpha
+      PROVIDER_BETA_URL: http://providers:8001/beta
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      providers:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
